@@ -1,0 +1,551 @@
+#+Author: Jeremy Ornelas
+* Code Design
+** Data types
+- This is the section just defines some primitive types that we use to
+  more accurately and succinctly represent the problem in question.
+  #+BEGIN_SRC haskell
+    data Moves = Up | Down | Left | Right
+      deriving (Show,Eq)
+  #+END_SRC
+  + simply Up, Down, Left, and Right.
+- Another important design decision that will effect future code
+  snippets is how Ι represent a node on the graph, as this is the
+  structure that will be traversed with the various algorithms.
+  #+BEGIN_SRC haskell
+    data Node a = Node {puzzle  :: Puzz a
+                       ,moves   :: [Moves]
+                       ,zeroLoc :: Point Int
+                       ,steps   :: Int
+                       ,value   :: Int
+                       } deriving (Show,Eq)
+  #+END_SRC
+  + A node contains
+    * The puzzle representation
+    * The Moves list up to this point
+    * How many steps it has taken to get to this point
+    * Any weights on the node (this only matters for beam search)
+** Testing Sets
+- The testing set is not really that significant besides defining the
+  answer of the puzzle and various tests that I've used to check how the
+  algorithms preform on a concrete example.
+  #+BEGIN_SRC haskell
+    ans :: Puzz Int
+    ans = V.fromList <$> V.fromList [[0,1,2]
+                                    ,[3,4,5]
+                                    ,[6,7,8]]
+  #+END_SRC  
+  + This is the answer of the puzzle that is checked against, it's
+    just a Vector of Vectors.
+** General Functions
+- These general functions are the set of functions that tell our
+  various data structures how to add, remove, and organize elements.
+- Furthermore, these functions will be passed to a generic function in
+  the Search Algorithms part in order to distinguish whether we want
+  breadth first, depth first, or A* search.
+
+- Here are two example functions to get a better idea about what the
+  code in this section looks like
+  #+BEGIN_SRC haskell
+    pop :: Seq a -> Seq a
+    pop = S.drop 1
+
+    -- runs in O(nlog(n))
+    beamPrune :: Int -> [Node Int] -> [Node Int] -> [Node Int]
+    beamPrune max seq xs = L.drop (P.length newXs - max) $ L.sortBy sortTupMax newXs
+      where
+        newXs = seq <> xs
+  #+END_SRC
+  + Pop is as you would expect from a queue structure.
+  + beamPrune function really just adds legalMoves and prunes the
+    resulting list to fit within the specified allowed beam count.
+** Search Algorithms
+- This code section only has two major functions which dictate all the searches
+*** searchGen
+#+BEGIN_SRC haskell
+  searchGen :: Foldable t =>
+              (Puzz Int -> Int)          -- The value of each node
+            -> (t a -> Node Int)         -- the peek function
+            -> (t a -> t1)               -- the pop function 
+            -> t1                        -- the empty set
+            -> (t1 -> [Node Int] -> t a) -- combine our two new structures!
+            -> Puzz Int                  -- The starting location
+            -> Puzz Int                  -- The goal
+            -> Int                       -- The max number of moves, -1 is unbounded
+            -> Maybe [Moves]             -- the Answer if it even eixsts
+  searchGen valVec peek pop emptyQueue fold start goal lim
+    = P.reverse <$> recurse (defaultNode start) emptyQueue H.empty
+    where
+      recurse node@(Node puzz path _ _ _) queue seen
+        | puzz == goal      = Just path
+        | null updatedQueue = Nothing
+        | otherwise         = recurse (peek updatedQueue) (pop updatedQueue) newSeen
+        where
+          validMoves   = legalMoves node seen valVec lim
+          updatedQueue = fold queue validMoves
+          newSeen      = H.insert puzz seen
+#+END_SRC
+- SearchGen is the function that ends up defining BFS, DFS, a
+  modification of beam search, and A* search.
+- The comments besides each argument type explains the purpose of each
+  argument
+
+  + NOTE :: the first four arguments are the functions from the
+            General Functions section
+
+- The algorithm works by recursively going through a single neighbor
+  node and adding all validMoves from the the current node to the queue
+  structure (updatedQueue), and we simply mark the current node is seen
+  via newSeen. Once the puzz is at the goal, then we return the path
+  else we check if the newQueue is empty and leave or simply recurse to
+  either outcome.
+
+  + NOTE :: newSeen is O(log(n)) as it's a pure set, doing so in O(1)
+            would cause the generator algorithm be lifted into IO
+
+- Below are example ways of defining A*, breadth first, and depth first
+  search.
+  #+BEGIN_SRC haskell
+    aStarGen f start = searchGen computeNothing ppeek ppop Q.empty f start ans
+
+    -- the specific case A* that only goes to answer
+    aStarSearch :: Puzz Int -> Int -> Maybe [Moves]
+    aStarSearch = aStarGen heuristic2
+
+    -- we use a fingerTree as a queue, as they are pure
+    depthOrBredth = searchGen computeNothing peek pop S.empty
+
+    -- foldl (|>) appends the node to the front of the queue
+    -- giving us BFS order 
+    breadthFirst :: Puzz Int -> Puzz Int -> Int -> Maybe [Moves]
+    breadthFirst = depthOrBredth (foldl (|>))
+
+    -- foldl (<|) appends the node to the back of the queue
+    -- giving us DFS order 
+    depthFirst :: Puzz Int -> Puzz Int -> Int -> Maybe [Moves]
+    depthFirst = depthOrBredth (foldr (<|))
+  #+END_SRC
+  + the A* version here is shown sending in a priority queue like
+    structure and the relevant pop and peak functions. These combine with
+    the heuristic (which I include 4 variants) to dictate which node
+    gets expanded first
+- Overall, this function is vastly general and can represent any graph
+  algorithm that expands 1 node at a time
+*** beamSearch
+#+BEGIN_SRC haskell
+  -- This is the traditional version of beamSearch
+  -- it expands all nodes on the queue
+  beamSearch :: Puzz Int -> Int -> Int -> Maybe [Moves]
+  beamSearch start numBeams lim
+    | start == ans = Just []
+    | otherwise   = P.reverse <$> loop startingMove H.empty
+    where
+      startingMove = legalMoves (defaultNode start) H.empty heuristic2Ans lim
+
+      loop queue seen
+        | null updatedQueue  = Nothing
+        | not (null beamAns) = Just . moves . L.head $ beamAns
+        | otherwise          = loop updatedQueue nlpewSeen
+        where
+          updatedQueue = foldr addInNodes [] queue
+          newSeen      = foldr    (H.insert . puzzle) seen updatedQueue
+          beamAns      = P.filter ((== ans) . puzzle) updatedQueue
+
+          addInNodes node newQueue = beamPrune numBeams
+                                               newQueue
+                                               (legalMoves node
+                                                           seen
+                                                           heuristic2Ans
+                                                           lim)
+#+END_SRC
+- beamSearch is special compared the the variants in searchGen because
+  it ultimately wants to expand all nodes at once, instead of
+  expanding nodes one at a time.
+- the fold with the addInNodes function makes all nodes expanded into
+  an empty list.
+  + This is correct behavior, as addInNodes prunes the list after each
+    cycle, thus preserving the property of the queue having at most K
+    items inside of it at any one time!
+- to check for the answer, we just filter the list for the aanswer, and
+  return the first solution
+** Movement Functions
+- These functions dictate what moves are legal, and thus define a way to
+  move around the vector of vectors.
+- an Example function of how we move in the coordinates is shown below
+  #+BEGIN_SRC haskell
+    locMov :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
+    locMov vec (P x y) = vec ^? (ix x . ix y)
+
+    up :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
+    up    vec (P x y) = locMov vec (P (x - 1) y)
+    left  vec (P x y) = locMov vec (P    x    (y - 1))
+  #+END_SRC
+  + I'm showing off these functions in particular, since they show a
+    design pattern in which I can implicitly bounds check for being
+    inside the vector through the use of a Data type called Maybe.
+
+  + I know I'm out of bounds if Up returns Nothing, but if Up returns
+    Just 3 (for example), then I know for a fact this is a valid place
+    to move
+
+- All the various functions in this classification get fed into
+  legalMoves, which threads into beamSearch and searchGen.
+  #+BEGIN_SRC haskell
+    legalMoves :: (Num a, Eq a, Ord a) => Node a -> H.Set (Puzz a) -> (Puzz a -> Int) -> Int -> [Node a]
+    legalMoves currNode seen f lim
+      = [newNodes {value = f (puzzle newNodes)} | newNodes <- catMaybes maybeMove
+                                              , lim < 0 || steps newNodes < lim
+                                              , not (H.member (puzzle newNodes) seen)]
+      where
+        apply f   = f (currNode {steps = 1 + steps currNode})
+        maybeMove = apply <$> [moveUp,moveDown,moveLeft,moveRight]
+  #+END_SRC 
+  + the threading of the various functions happens in the line
+    maybeMove = ..., and from here we prune all moves that are valid and
+    don't violate any of the constraints given to use by the
+    algorithms.
+** Heuristic Functions
+- There is really one function here called heuristicGenerator that
+  takes a heuristic and a vector and gives back a value
+- I'm leaving out the code, as it's not important to the overall design
+  of the program, just note that this function gets used by the
+  various heuristic searches.
+** Setup/Helper Functions
+- These functions just help the startup of the algorithms
+- For example, there is a function that gets the zeroLocation of a puzzle
+** User Interface functions
+- These functions have almost no design impact, except for displaying
+  how the grader might play with the code
+- Do note that all this code is functional, and thus there is no setting
+  of state, so playing with the code is a bit different compared to an
+  imperative version. So I have left some examples of how best to test.
+  + _some useful commands_
+    1. parseString "b12 345 678" = gives us the answer
+    2. move Up puzz = moves the puzzle up
+    3. moveList puzzle [Down,Right,Down] = moves the puzzle Down Right and
+       finally Down
+    4. moveListP puzzle [Down,Right,Down] = moves the puzzle Down Right and
+       finally Down and pretty prints them!
+       + this is impure, so the answer can't be fed into an algorithm
+         like moveList can!
+** Timing Functions
+- These set of functions just test the code for the experimentation
+  section.
+- The code is rather simple, and the purity of the code makes it so that
+  if I wanted to implement various other statistics to the stats, I
+  would have to change the algorithm itself to accommodate this.
+- The things can specify however, are how many nodes it can expand,
+  how many moves should we generate from the answer, and the seed.
+* Code Correctness
+** A* search
+- I've done A* search in 4 total ways. the first two methods involve not
+  using the path cost (i.e. each node has a path cost of 0), and the
+  second two involve setting the path cost to 1.
+  + the difference can be summarized in the formula f(n) = g(n) +
+    h(n), where the first two set g(n) to 0
+    * also known as best-first search!
+- the other difference between the A* algorithms, is just the h1
+  heuristic vs the h2 heuristic
+- NOTE :: h1 = heuristic1p, h2 = heuristic2p, and the variants that
+          include path are called heuristic1 and heuristic2 respectively
+- _brief overview_
+  + the code was already slightly explained in the code design section
+    above, but let me reiterate some design decisions
+  + A* search stores each node in a priority queue, and looks at the
+    node with the least value (determined by the heuristic) to expand
+    and adds that nodes neighbors to the queue.
+  + The algorithm also cuts off all seen nodes from being expanded in
+    unrelated branches in order to save time and space
+  + Another time and space cutting measure, is that the code returns the
+    first answer to the solution
+- _Examples_
+  + f heuristic = P.length <$> aStarGen heuristic anotherTest (-1)
+    * f heuristic2p : Just 27
+    * f heuristic1p : Just 27
+    * f heuristic2  : Just 41
+    * f heuristic1  : Just 51
+    * _
+    * _
+    * this will give us back the path length of A* under various
+      conditions
+    * notice how supplying the path comes with a better result (though
+      you pay in how many nodes it must expand to the answer!)
+    * when given unlimited moves, nothing should ever fail!
+  + f heuristic = P.length <$> aStarGen heuristic anotherTest (40)
+    * f heuristic2p : Just 27
+    * f heuristic1p : Just 27
+    * f heuristic2  : Nothing
+    * f heuristic1  : Just 39
+    * _
+    * _
+    * Now that we supply a limit of 40, we can see that heuristic2
+      has failed, while heuristic1 has not, the reason why this pops up
+      is because in the searchGen code (shown in the previous
+      section), we store all seen nodes in a Seen set. so, what
+      happens is that the heuristic2 variant, expands the right node
+      towards the answer, but does so slightly too late, which means
+      we used up all 40 moves, and now the moves that are left have no
+      way of getting to the answer since we would need to retread
+      territory that we've already visited
+      - One possible fix is to store seen states in a hashtrie, but
+        then our algorithms would waste more space and time than they
+        would otherwise.
+- f heuristic = P.length <$> aStarGen heuristic anotherTest (20)
+  * f heuristic2p : Nothing
+  * f heuristic1p : Nothing
+  * f heuristic2  : Nothing
+  * f heuristic1  : Nothing
+  * _
+  * _
+  * obviously everything will fail since there is no way to get to
+    the asnwer from anotherTest in 20 moves!
+** beamSearch
+- _brief overview_
+  + The function has already been explained in beamSearch section of
+    Search Algorithms, so refer there.
+- _Examples_
+  + f k =  P.length <$> beamSearch anotherTest k (-1)
+    * f 10 : Just 47
+    * f 20 : Just 39
+    * f 30 : Just 31
+    * f 30 : Just 27
+    * _
+    * _
+    * since the limit is (-1), beamSearch should never fail
+    * Notice how when the beamSize increase, the answers get better and
+      better. This is the case because we allow for a greater variety
+      of sates to stick around, but we pay for the better answer ins
+      increased computation and memory resources.
+    * Also as beamSize increase, the closer and closer we get to BFS
+      (BFS is beamSize ∞)
+  + f k =  P.length <$> beamSearch anotherTest k 46
+    * f 10 : Nothing
+    * f 20 : Just 39
+    * f 30 : Just 31
+    * f 30 : Just 27
+    * _
+    * _
+    * Notice how when we set the limit to 46, the answer immediately
+      becomes uncomputable for a beam size of 10, this shows
+      consistency, as we keep expanding nodes that lead to an answer,
+      so if one node gets closer, its children are more likely to be
+      included, and thus the entire list of possibilities can quickly
+      die all at once in this particular puzzle.
+  + f k =  P.length <$> beamSearch anotherTest k 38
+    * f 10 : Nothing
+    * f 20 : Nothing
+    * f 30 : Just 31
+    * f 30 : Just 27
+    * _
+    * _
+    * Same example as last
+  + f k =  P.length <$> beamSearch anotherTest k 30
+    * f 10 : Nothing
+    * f 20 : Nothing
+    * f 30 : Nothing
+    * f 30 : Just 27
+    * _
+    * _
+    * Same example as last
+* Experimentation
+- The First graph below was collected using 10k tests on A* h1, h2 and
+  recollected 3 other times for beam search 10 through 40
+  + NOTE :: The A* versions are those with the paths included!
+- The second graph contains 1000 tests of beamSearch with a beamSize
+  of 10 and how that effects results
+  + NOTE :: We only include beamSearch as that's the only search that
+            had to throw away data in the 10k pool. the 1k pool is the
+            first thousand entires of the 10k pool.
+|               | Misc | A* h1 |   A* h2 | beam 10 | beam 20 | beam 40 |
+|---------------+------+-------+---------+---------+---------+---------|
+| Away          |    2 |       |         |         |         |         |
+| Average       |      |     2 |       2 |       2 |       2 |       2 |
+| num Succeeded |      |   217 |     217 |     217 |     217 |     217 |
+|               |      |       |         |         |         |         |
+| Away          |    4 |       |         |         |         |         |
+| Average       |      |     4 |       4 |       4 |       4 |       4 |
+| num Succeeded |      |   419 |     419 |     419 |     419 |     419 |
+|               |      |       |         |         |         |         |
+| Away          |    6 |       |         |         |         |         |
+| Average       |      |     6 |       6 |     7.7 |       6 |       6 |
+| num Succeeded |      |   716 |     716 |     716 |     716 |     716 |
+|               |      |       |         |         |         |         |
+| Away          |    8 |       |         |         |         |         |
+| Average       |      |     8 |       8 |    8.25 |       8 |       8 |
+| num Succeeded |      |  1143 |    1143 |    1143 |    1143 |    1143 |
+|               |      |       |         |         |         |         |
+| Away          |   10 |       |         |         |         |         |
+| Average       |      |    10 |      10 |  12.008 |  10.197 |      10 |
+| num Succeeded |      |  1338 |    1338 |    1338 |    1338 |    1338 |
+|               |      |       |         |         |         |         |
+| Away          |   12 |       |         |         |         |         |
+| Average       |      |    12 | 12.0068 |  16.775 |  12.482 |      12 |
+| num Succeeded |      |  1453 |    1453 |    1453 |    1453 |    1453 |
+|               |      |       |         |         |         |         |
+| Away          |   14 |       |         |         |         |         |
+| Average       |      |    14 | 14.0056 |  21.785 |  14.737 |      14 |
+| num Succeeded |      |  1415 |    1415 |    1415 |    1415 |    1415 |
+|               |      |       |         |         |         |         |
+| Away          |   16 |       |         |         |         |         |
+| Average       |      |    16 | 16.0096 |  29.404 |  18.874 |  16.218 |
+| num Succeeded |      |  1243 |    1243 |    1243 |    1243 |    1243 |
+|               |      |       |         |         |         |         |
+| Away          |   18 |       |         |         |         |         |
+| Average       |      |    18 |  18.013 |  35.335 |  23.256 |  19.111 |
+| num Succeeded |      |  1041 |    1041 |    1041 |    1041 |    1041 |
+|               |      |       |         |         |         |         |
+| Away          |   20 |       |         |         |         |         |
+| Average       |      |    20 |  20.006 |  37.882 |  27.277 |  22.354 |
+| num Succeeded |      |   598 |     598 |     598 |     598 |     598 |
+|               |      |       |         |         |         |         |
+| Away          |   22 |       |         |         |         |         |
+| Average       |      |    22 |  22.021 | 43.3501 |  30.686 |  25.191 |
+| num Succeeded |      |   277 |     277 |     277 |     277 |     277 |
+|               |      |       |         |         |         |         |
+| Away          |   24 |       |         |         |         |         |
+| Average       |      |    24 |      24 |  49.079 |  33.775 |  28.629 |
+| num Succeeded |      |    89 |      89 |      89 |      89 |      89 |
+|               |      |       |         |         |         |         |
+| Away          |   26 |       |         |         |         |         |
+| Average       |      |    26 |      26 |  54.210 |      36 |  32.211 |
+| num Succeeded |      |    19 |      19 |      19 |      19 |      19 |
+
+| beamSearch    | Misc | 20 moves | 30 moves | 40 moves | 50 moves |
+|---------------+------+----------+----------+----------+----------|
+| Away          |    2 |          |          |          |          |
+| Average       |      |        2 |        2 |        2 |        2 |
+| num Succeeded |      |       16 |       16 |       16 |       16 |
+| Num Failed    |      |        0 |        0 |        0 |        0 |
+| Away          |    4 |          |          |          |          |
+| Average       |      |        4 |        4 |        4 |        4 |
+| num Succeeded |      |       34 |       34 |       34 |       34 |
+| Num Failed    |      |        0 |        0 |        0 |        0 |
+| Away          |    6 |          |          |          |          |
+| Average       |      |        6 |        6 |   8.1176 |   8.1176 |
+| num Succeeded |      |       62 |       62 |       68 |       68 |
+| Num Failed    |      |        6 |        6 |        0 |        0 |
+| Away          |    8 |          |          |          |          |
+| Average       |      |  8.30909 |  8.30909 |  8.30909 |  8.30909 |
+| num Succeeded |      |      110 |      110 |      110 |      110 |
+| Num Failed    |      |        0 |        0 |        0 |        0 |
+| Away          |   10 |          |          |          |          |
+| Average       |      |   10.202 |   10.202 |  10.5106 |  10.5106 |
+| num Succeeded |      |      138 |      138 |      141 |      141 |
+| Num Failed    |      |        6 |        6 |        3 |        3 |
+| Away          |   12 |          |          |          |          |
+| Average       |      |    12.26 |    12.26 |  13.9135 |   14.176 |
+| num Succeeded |      |      107 |      107 |      124 |      125 |
+| Num Failed    |      |       21 |       21 |        4 |        3 |
+| Away          |   14 |          |          |          |          |
+| Average       |      |    14.24 |    14.24 |  16.7000 |  17.1875 |
+| num Succeeded |      |      125 |      125 |      157 |      160 |
+| Num Failed    |      |       48 |       48 |       16 |       13 |
+| Away          |   16 |          |          |          |          |
+| Average       |      |     16.4 |     16.4 |       20 |  21.4727 |
+| num Succeeded |      |       65 |       65 |      103 |      110 |
+| Num Failed    |      |       67 |       67 |       29 |       22 |
+| Away          |   18 |          |          |          |          |
+| Average       |      |       18 |       18 |   21.472 |   24.769 |
+| num Succeeded |      |       36 |       36 |       70 |       78 |
+| Num Failed    |      |       62 |       62 |       28 |       20 |
+| Away          |   20 |          |          |          |          |
+| Average       |      |      NaN |      Nan |  26.5789 |   28.511 |
+| num Succeeded |      |        0 |        0 |       38 |       43 |
+| Num Failed    |      |       54 |       54 |       16 |       11 |
+| Away          |   22 |          |          |          |          |
+| Average       |      |      NaN |      Nan |   28.142 |   31.176 |
+| num Succeeded |      |        0 |        0 |       14 |       17 |
+| Num Failed    |      |       26 |       26 |       12 |        9 |
+| Away          |   24 |          |          |          |          |
+| Average       |      |      NaN |      NaN |     31.2 |     33.0 |
+| num Succeeded |      |        0 |        0 |        5 |        6 |
+| Num Failed    |      |       11 |       11 |        6 |        5 |
+** How does the fraction of solvable Puzzles from random initial states vary with the maxNode limit
+- for all searches besides beam search, the number of MaxNodes does not
+  matter since they get an answer that in the case of H1 exactly the
+  answer, and in the case of H2 get close enough that almost none were excluded
+- so we must look at graph two
+  + Between 20 moves and 30 moves nothing changes, which means all
+    excluded paths must have a length greater than 30
+  + _away = 10_
+    * we get a 2% increase in solvable puzzles from 30 moves to 40 and 50
+  + _away = 12_
+    * 20 = 83.5%
+    * 40 = 96.9%
+    * 50 = 97.6%
+  + _away = 14_
+    * 20 = 72.2%
+    * 40 = 90.8%
+    * 50 = 92.5%
+  + _away = 16_
+    * 20 = 49.2%
+    * 40 = 78.0%
+    * 50 = 83.3%
+  + _away = 18_
+    * 20 = 36.7%
+    * 40 = 71.4%
+    * 50 = 80.0%
+  + _away = 20_
+    * 20 = 0%
+    * 40 = 70.0%
+    * 50 = 79.6%
+  + _away = 22_
+    * 20 = 0%
+    * 40 = 53.8%
+    * 50 = 65.3%      
+  + _away = 24_
+    * 20 = 0%
+    * 40 = 45.4%
+    * 50 = 54.5%
+** For A* search, which heuristic is better?
+- For Solely getting the answer right, then h1, but what is not shown in
+  the charts is how long this all took. h1 by far takes more time (on
+  the offTest example h2 takes .102s and 1.913s)
+- so if we were to show all variants on the scale of correctness
+  + h1 = h2  > h2 no path > h1 no path
+- But if we include time calculations, then this would look quite different
+  + For example consider anotherTest which is 27 moves from being finished
+    |        | h1Path | h2Path | h1NoPath | h2NoPath |
+    |--------+--------+--------+----------+----------|
+    | time   | 1.913s | 0.102s | 0.026s   | 0.017s   |
+    | Memory | 67MB   | 7 MB   | 2 MB     | 2 MB     |
+- so for a bigger problem domain I would choose bestFirstSearch
+  (h2NoPath), but since the problem domain is small, Ι would prefer
+  h2Path for the proper answer
+** How does the solution length vary across the three search methods
+- the First table shows that A* h1 and h2 give the same result, where as
+  beamSearch varies on the result and gets closer as the beam size increases
+** For each of the three search methods, what fraction of your generated problems were solvable
+- All of the problems were solvable when maxNodes was infinite.
+- Only beamSearch had problems solving problems when maxNodes was not
+  infinite, and the percentage of solvable puzzles can be seen as per
+  part 1 of experiments.
+* Discussion
+- _which search algorithm is better suited for this problem?_
+  + I would say either beamSearch with a higher beamCount (say maybe
+    90~) or A* h2
+- _Which finds shorter solutions_
+  + BFS, A* h2, and A* h1 all find the perfect solution with A* h2
+    giving some answers that are not optimal very very rarely (as seen
+    per the experiments)
+- _Which algorithm seems superior in terms of time and space_
+  + Well, A* h1 no path, A* h2 no path, and beamSearch all take
+    roughly 2MB of memory, no matter what puzzle I send at them, so
+    they all tie for space
+      
+  + As for time, A* h2 no path and beam search come pretty close. when
+    the beamCount is 10 they run at the same speed, but when the
+    beamCount increases, A* h2 no path eeks out a small lead by a
+    few milliseconds (0.017s vs 0.021s).
+
+
+- _Discuss any other observations you made_
+  + Well implementing the algorithms wasn't really hard, all I did was
+    make a base algorithm BFS, then generalized it to get A* and DFS. At
+    first I made a beam Search that was more akin to BFS mixed with A*
+    that was rather interesting.
+  + Haskell's type system and purity made implementing everything easy and
+    quick to implement. The only downsides is that I can't just cheat
+    and put side effecting code in my algorithms to make the collection
+    of how many nodes each expands easy. But this is really a virtue
+    in disguise as if I were allowed to do this, the types would tell
+    me nothing of this behavior and I could easily forget to remove it.
