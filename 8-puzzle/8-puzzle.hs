@@ -11,7 +11,7 @@ import Data.PriorityQueue.FingerTree as Q hiding (null) -- Priority queue for A*
 import qualified Data.Char           as C
 import qualified Data.Foldable       as F
 import qualified Data.Map.Strict     as M
-import qualified Data.Set            as H hiding (null) -- O(log(n)) replace with impure hash-table if slow
+import qualified Data.Set            as H  -- O(log(n)) replace with impure hash-table if slow
 import qualified Data.String         as ST
 -- NOTE REPLACE VECTOR with an Array
 
@@ -23,7 +23,7 @@ data Moves = Up | Down | Left | Right
 type Puzz a = Vector (Vector a)
 
 data Point a = P a a
-  deriving (Show,Eq)
+  deriving (Show,Eq, Ord)
 
 data Node a = Node {puzzle  :: Puzz a
                    ,moves   :: [Moves]
@@ -58,6 +58,10 @@ pop = S.drop 1
 peek :: Seq a -> a
 peek = (`index` 0)
 
+-- alternate definition
+--peek = element . S.viewl
+--  where element (ele S.:< _) = ele
+
 -- for our use case, we can ignore the maybe type, as it does not matter as we bounds check in searchGen!
 ppeek :: Ord k => PQueue k t -> t
 ppeek = value . Q.minView
@@ -66,7 +70,7 @@ ppeek = value . Q.minView
     value Nothing      = error "didn't bounds check"
 
 ppop :: Ord k => PQueue k t -> PQueue k t
-ppop = value . Q.minView 
+ppop = value . Q.minView
   where
     value (Just (_,a)) = a
     value Nothing      = error "didn't bounds check"
@@ -97,12 +101,12 @@ beamPruneMod seq list  = S.fromList (listSeq `intersect` listSeqSorted)
     listSeq       = F.toList (foldl (|>) seq list)
     listSeqSorted = L.drop (P.length listSeq - listMax) $ L.sortBy sortTupMax listSeq
     listMax       = 10 -- 10 is a decent size for the list to get to before we prune
-    
+
 -- SEARCHES -----------------------------------------------------------------------------------------------------
 
 searchGen :: Foldable t =>
              (Puzz Int -> Int)         -- The value of each node, useless unless for beamSearch
-          -> (t a -> Node Int)         -- the peek function to look at the first thing in the 
+          -> (t a -> Node Int)         -- the peek function to look at the first thing in the
           -> (t a -> t1)               -- the pop function that will remove what we just peeked
           -> t1                        -- the empty set for whatever the data type we are sending is!
           -> (t1 -> [Node Int] -> t a) -- the function that will combine our two new structures!
@@ -151,7 +155,7 @@ beamSearchMod start = searchGen heuristic2Ans peek pop S.empty beamPruneMod star
 beamSearch :: Puzz Int -> Int -> Int -> Maybe [Moves]
 beamSearch start numBeams lim
   | start == ans = Just []
-  | otherwise   = P.reverse <$> loop startingMove H.empty
+  | otherwise    = P.reverse <$> loop startingMove H.empty
   where
     startingMove = legalMoves (defaultNode start) H.empty heuristic2Ans lim
 
@@ -160,9 +164,9 @@ beamSearch start numBeams lim
       | not (null beamAns) = Just . moves . L.head $ beamAns
       | otherwise          = loop updatedQueue newSeen
       where
-        updatedQueue = foldr addInNodes [] queue                        -- adds all inner nodes into a new set for beamSort
-        newSeen      = foldr    (H.insert . puzzle) seen updatedQueue   -- adds all the new nodes into the seen list
-        beamAns      = P.filter ((== ans) . puzzle) updatedQueue        -- try to see if the answer is in the new queue
+        updatedQueue = foldr addInNodes [] queue                      -- adds all inner nodes into a new set for beamSort
+        newSeen      = foldr    (H.insert . puzzle) seen updatedQueue -- adds all the new nodes into the seen list
+        beamAns      = P.filter ((== ans) . puzzle) updatedQueue      -- try to see if the answer is in the new queue
 
         addInNodes node newQueue = beamPrune numBeams newQueue (legalMoves node seen heuristic2Ans lim)
 
@@ -171,13 +175,19 @@ beamSearch start numBeams lim
 locMov :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
 locMov vec (P x y) = vec ^? (ix x . ix y)
 
-up :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
-up    vec (P x y) = locMov vec (P (x - 1) y)
-down  vec (P x y) = locMov vec (P (x + 1) y)
-left  vec (P x y) = locMov vec (P    x    (y - 1))
-right vec (P x y) = locMov vec (P    x    (y + 1))
+upDir :: Num a => Point a -> Point a
+upDir    (P x y) = P (x - 1)    y
+downDir  (P x y) = P (x + 1)    y
+leftDir  (P x y) = P    x    (y - 1)
+rightDir (P x y) = P    x    (y + 1)
 
--- Updates the vector 
+up :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
+up    vec = locMov vec . upDir
+down  vec = locMov vec . downDir
+left  vec = locMov vec . leftDir
+right vec = locMov vec . rightDir
+
+-- Updates the vector
 -- new version using lenses
 updateVec :: Puzz a -> Point Int -> a -> Puzz a
 updateVec vec (P x y) val = vec & (ix x . ix y) .~ val
@@ -196,25 +206,24 @@ moveLoc (Just val) current xynew xyold = Just updateOld
     updateOld = updateVec updateNew xyold val --update old 0 pos
 
 
-moveGen :: Num b =>
-           Int       -- how many steps it has taken to get to this node
-        -> Maybe b   -- The valid value if the location in question even exists
-        -> Moves     -- the new move 
-        -> Puzz b    -- the current puzzle to be updated
-        -> Point Int -- the new 0 coordinates
-        -> Point Int -- the old 0 coordinates
-        -> [Moves]   -- the updated moves list
-        -> Maybe (Node b)
-moveGen numSteps loc move vec xynew xyold path = createNode <$> moveLoc loc vec xynew xyold
-  where
-    createNode vec = Node vec (move : path) xynew numSteps (-1) -- note the -1 is bad, replace with a Nothing later
+moveGen :: Num a => (Puzz a -> Point Int -> Maybe a) -- the function that would move the 0 piece
+                -> Moves                            -- the new move
+                -> (Point Int -> Point Int)         -- applies a change on the coordinates
+                -> Node a                           -- the current node
+                -> Maybe (Node a)
+moveGen dir move newDir (Node vec path xyold numSteps _) = createNode <$> moveLoc loc vec xynew xyold
+  where loc            = dir vec xyold -- The valid value if the location in question even exists
+        xynew          = newDir xyold  -- the new 0 coordinates
+        createNode vec = Node vec (move : path) xynew numSteps (-1) -- note the -1 is bad, replace with a Nothing later
 
-
-moveUp :: (Num a, Eq a) => Node a -> Maybe (Node a)
-moveUp    (Node vec m (P x y) step _) = moveGen step (up    vec (P x y)) Up    vec (P (x - 1)    y)    (P x y) m
-moveDown  (Node vec m (P x y) step _) = moveGen step (down  vec (P x y)) Down  vec (P (x + 1)    y)    (P x y) m
-moveLeft  (Node vec m (P x y) step _) = moveGen step (left  vec (P x y)) Left  vec (P    x    (y - 1)) (P x y) m
-moveRight (Node vec m (P x y) step _) = moveGen step (right vec (P x y)) Right vec (P    x    (y + 1)) (P x y) m
+moveDown  :: (Num a, Eq a) => Node a -> Maybe (Node a)
+moveUp    :: (Num a, Eq a) => Node a -> Maybe (Node a)
+moveLeft  :: (Num a, Eq a) => Node a -> Maybe (Node a)
+moveRight :: (Num a, Eq a) => Node a -> Maybe (Node a)
+moveUp    = moveGen up    Up    upDir
+moveDown  = moveGen down  Down  downDir
+moveLeft  = moveGen left  Left  leftDir
+moveRight = moveGen right Right rightDir
 
 
 legalMoves :: (Num a, Eq a, Ord a) => Node a -> H.Set (Puzz a) -> (Puzz a -> Int) -> Int -> [Node a]
@@ -235,39 +244,27 @@ heuristicGenerator difference = snd . V.foldl' innersum (0,0)
       where
         pointLoc = P loc <$> [0..2]
 
-heuristic1Ans :: (Num a, Eq a) => Puzz a -> Int
+heuristic1Ans :: (Num a, Eq a) => Puzz Int -> Int
 heuristic1Ans = heuristicGenerator h1
 
 -- the heuristic for the normal 012 345 678 answer
 -- this version does not return a new matrix to return the difference in size
-heuristic2Ans :: (Num a, Eq a) => Puzz a -> Int
+heuristic2Ans :: (Num a, Eq a) => Puzz Int -> Int
 heuristic2Ans = heuristicGenerator h2
 
--- this is written rather poorly refactor later!
-h1 :: (Eq a1, Eq a2, Num a, Num a1, Num a2) => (Point a1, a2) -> a
-h1 (P 0 0, 0) = 0
-h1 (P 0 1, 1) = 0
-h1 (P 0 2, 2) = 0
-h1 (P 1 0, 3) = 0
-h1 (P 1 1, 4) = 0
-h1 (P 1 2, 5) = 0
-h1 (P 2 0, 6) = 0
-h1 (P 2 1, 7) = 0
-h1 (P 2 2, 8) = 0
-h1 _ = 1
+pointsAre :: H.Set (Point Int, Int)
+pointsAre =  H.fromList [(P 0 0, 0), (P 0 1, 1), (P 0 2, 2),
+                         (P 1 0, 3), (P 1 1, 4), (P 1 2, 5),
+                         (P 2 0, 6), (P 2 1, 7), (P 2 2, 8)]
 
--- this is rather poorly written, think of a more general equation later!!!!! (where are my macros!?!?)
-h2 :: (Eq a, Num a, Num a1) => (Point a1, a) -> a1
-h2 (xy, 0) = calcDiff (P 0 0) xy
-h2 (xy, 1) = calcDiff (P 0 1) xy
-h2 (xy, 2) = calcDiff (P 0 2) xy
-h2 (xy, 3) = calcDiff (P 1 0) xy
-h2 (xy, 4) = calcDiff (P 1 1) xy
-h2 (xy, 5) = calcDiff (P 1 2) xy
-h2 (xy, 6) = calcDiff (P 2 0) xy
-h2 (xy, 7) = calcDiff (P 2 1) xy
-h2 (xy, 8) = calcDiff (P 2 2) xy
-    
+h1 :: (Point Int, Int) -> Int
+h1 = f . flip H.member pointsAre
+  where f False = 1
+        f True = 0
+
+h2 :: (Point Int, Int) -> Int
+h2 (xy, index) = calcDiff point xy
+  where (point, _) = H.elemAt index pointsAre
 
 calcDiff :: Num a => Point a -> Point a -> a
 calcDiff (P x y) (P xoff yoff) = abs (x - xoff) + abs (y - yoff)
@@ -276,7 +273,6 @@ calcDiff (P x y) (P xoff yoff) = abs (x - xoff) + abs (y - yoff)
 -- the heuristic function that takes a goal and a starting point and stores the appropriate values in a new matrix
 heuristicGen :: Puzz Int -> Puzz Int -> (Int, Puzz (Int,Int))
 heuristicGen = undefined
-
 
 -- prebuilt up heuristic functions to be passed to aStarGen
 heuristic1 :: PQueue Int (Node Int) -> [Node Int] -> PQueue Int (Node Int)
@@ -353,7 +349,7 @@ move Up    vec  = justMovement vec moveUp
 move Down  vec  = justMovement vec moveDown
 move Left  vec  = justMovement vec moveLeft
 move Right vec  = justMovement vec moveRight
-  
+
 
 printPuzz :: (Show a, Foldable t) => t a -> IO ()
 printPuzz = F.mapM_ print
@@ -400,7 +396,7 @@ genStats lim away seed = fst . (iterate foldCase (M.empty, (seed,startSeed)) !!)
       where
         newSeed = R.next . snd $ seed
         vec     = randomMove (fst newSeed) away ans
-        
+
     testCase map vec = M.insert key (emptyTest lookup) map
       where
         key    = P.length <$> breadthFirst vec ans (-1)
@@ -424,7 +420,7 @@ goodStats = fmap grabInfo
     grabInfo (h1, h2, b) = (createInfo h1, createInfo h2, createInfo b)
 
 
-test = goodStats (genStats (-1) 50 12313 10000)    
+test = goodStats (genStats (-1) 50 12313 10000)
 -- RUNNING FUNCTIONS---------------------------------------------------------------------------------------------
 
 main :: IO ()
@@ -436,7 +432,7 @@ main = print $ P.length <$> beamSearch anotherTest 2 (-1)
 
 -- DEPRECATED CODE USED TO REMEMBER PREVIOUS DESIGN DECISION-----------------------------------------------------
 
--- Updates the vector 
+-- Updates the vector
 updateVec' :: Vector (Vector a) -> Point Int -> a -> Vector (Vector a)
 updateVec' vec (P x y) val = vec // [(x, vec ! x // [(y, val)])]
 
