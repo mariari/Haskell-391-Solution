@@ -1,3 +1,4 @@
+{-# LANGUAGE KindSignatures #-}
 import           Control.Lens as L hiding ((|>), (<|), index) -- used for easier getting and setting for vectors
 import           Data.List           as L
 import           Data.Maybe
@@ -13,7 +14,6 @@ import qualified Data.Foldable       as F
 import qualified Data.Map.Strict     as M
 import qualified Data.Set            as H  -- O(log(n)) replace with impure hash-table if slow
 import qualified Data.String         as ST
--- NOTE REPLACE VECTOR with an Array
 
 -- Data types----------------------------------------------------------------------------------------------------
 
@@ -34,6 +34,10 @@ data Node a = Node {puzzle  :: Puzz a
 
 defaultNode :: (Eq a, Num a) => Puzz a -> Node a
 defaultNode puzzle = Node puzzle [] (zeroPuzz puzzle) 0 0
+
+class Stack (s :: * -> *) where
+  pop  :: s a -> s a
+  peek :: s a -> a
 -- Testing Sets--------------------------------------------------------------------------------------------------
 
 -- let 0 be the empty square, we do this instead of defining a data
@@ -51,16 +55,17 @@ anotherTest = randomMove 39123 100 off
 
 randomTest = (\x -> randomMove x 100 off) <$> randomIO
 -- GENERAL FUNCTIOINS -------------------------------------------------------------------------------------------
-
-pop :: Seq a -> Seq a
-pop = S.drop 1
-
-peek :: Seq a -> a
-peek = (`index` 0)
+instance Stack Seq where
+  pop  = S.drop 1
+  peek = (`index` 0)
 
 -- alternate definition
 --peek = element . S.viewl
 --  where element (ele S.:< _) = ele
+
+instance Ord k => Stack (PQueue k) where
+  pop  = ppop
+  peek = ppeek
 
 -- for our use case, we can ignore the maybe type, as it does not matter as we bounds check in searchGen!
 ppeek :: Ord k => PQueue k t -> t
@@ -81,6 +86,7 @@ computeNothing _ = -1
 -- =<< = (f (g x) x)
 queuefold :: Ord k => (Puzz a -> k) -> PQueue k (Node a) -> Node a -> PQueue k (Node a)
 queuefold heuristic = flip (Q.add =<< heuristic . puzzle)
+
 
 queuefoldPath :: (Puzz a -> Int) -> PQueue Int (Node a) -> Node a -> PQueue Int (Node a)
 queuefoldPath heuristic = flip (Q.add =<< ((+) . steps) <*> heuristic . puzzle)
@@ -104,17 +110,16 @@ beamPruneMod seq list  = S.fromList (listSeq `intersect` listSeqSorted)
 
 -- SEARCHES -----------------------------------------------------------------------------------------------------
 
-searchGen :: Foldable t =>
-             (Puzz Int -> Int)         -- The value of each node, useless unless for beamSearch
-          -> (t a -> Node Int)         -- the peek function to look at the first thing in the
-          -> (t a -> t1)               -- the pop function that will remove what we just peeked
-          -> t1                        -- the empty set for whatever the data type we are sending is!
-          -> (t1 -> [Node Int] -> t a) -- the function that will combine our two new structures!
-          -> Puzz Int                  -- The starting location
-          -> Puzz Int                  -- The goal
-          -> Int                       -- The max number of moves, -1 is unbounded
-          -> Maybe [Moves]             -- the Answer if it even eixsts
-searchGen valVec peek pop emptyQueue fold start goal lim = P.reverse <$> recurse (defaultNode start) emptyQueue H.empty
+searchGen
+  :: (Foldable s, Stack s, Num a, Ord a) =>
+     (Puzz a -> Int)                           -- The value of each node, useless unless for beamSearch
+     -> s (Node a)                             -- the empty set for whatever the data type we are sending is!
+     -> (s (Node a) -> [Node a] -> s (Node a)) -- the function that will combine our two new structures!
+     -> Puzz a                                 -- The starting location
+     -> Puzz a                                 -- The goal
+     -> Int                                    -- The max number of moves, -1 is unbounded
+     -> Maybe [Moves]                          -- the Answer if it even exists
+searchGen valVec emptyQueue fold start goal lim = P.reverse <$> recurse (defaultNode start) emptyQueue H.empty
   where
     recurse node@(Node puzz path _ _ _) queue seen
       | puzz == goal      = Just path
@@ -125,7 +130,7 @@ searchGen valVec peek pop emptyQueue fold start goal lim = P.reverse <$> recurse
         updatedQueue = fold queue validMoves  -- if this is breadthFirst then we append to the back of the queue
         newSeen      = H.insert puzz seen     -- if this is depthFirst   then we append to the start of the queue
 
-depthOrBredth = searchGen computeNothing peek pop S.empty
+depthOrBredth = searchGen computeNothing S.empty
 
 breadthFirst :: Puzz Int -> Puzz Int -> Int -> Maybe [Moves]
 breadthFirst = depthOrBredth (foldl (|>))
@@ -135,7 +140,7 @@ depthFirst :: Puzz Int -> Puzz Int -> Int -> Maybe [Moves]
 depthFirst = depthOrBredth (foldr (<|))
 
 
-aStarGen f start = searchGen computeNothing ppeek ppop Q.empty f start ans
+aStarGen f start = searchGen computeNothing  Q.empty f start ans
 
 -- the specific case A* that only goes to answer
 aStarSearch :: Puzz Int -> Int -> Maybe [Moves]
@@ -148,7 +153,7 @@ aStarSearchPath = aStarGen heuristic2p
 -- this is a modified version of Beamsearch that expands 1 node at a
 -- time instead of all the children nodes at once
 beamSearchMod :: Puzz Int -> Int -> Maybe [Moves]
-beamSearchMod start = searchGen heuristic2Ans peek pop S.empty beamPruneMod start ans
+beamSearchMod start = searchGen heuristic2Ans S.empty beamPruneMod start ans
 
 -- This is the traditional version of beamSearch
 -- it expands all nodes on the queue
@@ -244,12 +249,12 @@ heuristicGenerator difference = snd . V.foldl' innersum (0,0)
       where
         pointLoc = P loc <$> [0..2]
 
-heuristic1Ans :: (Num a, Eq a) => Puzz Int -> Int
+heuristic1Ans :: Puzz Int -> Int
 heuristic1Ans = heuristicGenerator h1
 
 -- the heuristic for the normal 012 345 678 answer
 -- this version does not return a new matrix to return the difference in size
-heuristic2Ans :: (Num a, Eq a) => Puzz Int -> Int
+heuristic2Ans :: Puzz Int -> Int
 heuristic2Ans = heuristicGenerator h2
 
 pointsAre :: H.Set (Point Int, Int)
@@ -318,8 +323,7 @@ tzip lis seq = ans zipped
     ans (Just a) = toList a
 
 parseNum :: Char -> Int
-parseNum 'b' = 0
-parseNum a   = subtract 48 . C.ord $ a
+parseNum = (`mod` 11) . C.digitToInt
 
 
 -- grab a single random move
@@ -391,7 +395,7 @@ genStats :: Int -- the limit of how many steps we want for acceptable answers
          -> M.Map (Maybe Int) ([Maybe Int], [Maybe Int], [Maybe Int])
 genStats lim away seed = fst . (iterate foldCase (M.empty, (seed,startSeed)) !!)
   where
-    startSeed             = mkStdGen seed
+    startSeed           = mkStdGen seed
     foldCase (map,seed) = (testCase map vec, newSeed)
       where
         newSeed = R.next . snd $ seed
