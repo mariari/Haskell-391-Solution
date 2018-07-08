@@ -177,20 +177,15 @@ beamSearch start numBeams lim
 
 -- MOVE FUNCTIONS------------------------------------------------------------------------------------------------
 
-locMov :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
-locMov vec (P x y) = vec ^? (ix x . ix y)
+puzzPoint :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
+puzzPoint vec (P x y) = vec ^? (ix x . ix y)
 
-upDir :: Num a => Point a -> Point a
+upDir, downDir, leftDir, rightDir
+  :: Num a => Point a -> Point a
 upDir    (P x y) = P (x - 1)    y
 downDir  (P x y) = P (x + 1)    y
 leftDir  (P x y) = P    x    (y - 1)
 rightDir (P x y) = P    x    (y + 1)
-
-up :: (Num a, Eq a) => Puzz a -> Point Int -> Maybe a
-up    vec = locMov vec . upDir
-down  vec = locMov vec . downDir
-left  vec = locMov vec . leftDir
-right vec = locMov vec . rightDir
 
 -- Updates the vector
 -- new version using lenses
@@ -211,24 +206,22 @@ moveLoc (Just val) current xynew xyold = Just updateOld
     updateOld = updateVec updateNew xyold val --update old 0 pos
 
 
-moveGen :: Num a => (Puzz a -> Point Int -> Maybe a) -- the function that would move the 0 piece
-                -> Moves                            -- the new move
-                -> (Point Int -> Point Int)         -- applies a change on the coordinates
-                -> Node a                           -- the current node
-                -> Maybe (Node a)
-moveGen dir move newDir (Node vec path xyold numSteps _) = createNode <$> moveLoc loc vec xynew xyold
-  where loc            = dir vec xyold -- The valid value if the location in question even exists
-        xynew          = newDir xyold  -- the new 0 coordinates
+moveGen :: (Num a, Eq a) =>
+           Moves                    -- the move location
+        -> (Point Int -> Point Int) -- changes for the 0 node
+        -> Node a                   -- the current node
+        -> Maybe (Node a)
+moveGen move newDir (Node vec path xyold numSteps _) = createNode <$> moveLoc loc vec xynew xyold
+  where loc            = puzzPoint vec xynew -- The valid value if the location in question even exists
+        xynew          = newDir xyold        -- the new 0 coordinates
         createNode vec = Node vec (move : path) xynew numSteps (-1) -- note the -1 is bad, replace with a Nothing later
 
-moveDown  :: (Num a, Eq a) => Node a -> Maybe (Node a)
-moveUp    :: (Num a, Eq a) => Node a -> Maybe (Node a)
-moveLeft  :: (Num a, Eq a) => Node a -> Maybe (Node a)
-moveRight :: (Num a, Eq a) => Node a -> Maybe (Node a)
-moveUp    = moveGen up    Up    upDir
-moveDown  = moveGen down  Down  downDir
-moveLeft  = moveGen left  Left  leftDir
-moveRight = moveGen right Right rightDir
+moveDown, moveUp, moveLeft, moveRight
+  :: (Num a, Eq a) => Node a -> Maybe (Node a)
+moveUp    = moveGen Up    upDir
+moveDown  = moveGen Down  downDir
+moveLeft  = moveGen Left  leftDir
+moveRight = moveGen Right rightDir
 
 
 legalMoves :: (Num a, Eq a, Ord a) => Node a -> H.Set (Puzz a) -> (Puzz a -> Int) -> Int -> [Node a]
@@ -359,7 +352,7 @@ printPuzz :: (Show a, Foldable t) => t a -> IO ()
 printPuzz = F.mapM_ print
 
 moveList :: Foldable t => Puzz Int -> t Moves -> Puzz Int
-moveList vec movList = foldl (flip move) vec movList
+moveList = foldl (flip move)
 
 moveListP :: Foldable t => Puzz Int -> t Moves -> IO ()
 moveListP vec = printPuzz . moveList vec
